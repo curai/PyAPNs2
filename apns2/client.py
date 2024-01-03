@@ -71,17 +71,24 @@ class APNsClient(object):
                           priority: NotificationPriority = NotificationPriority.Immediate,
                           expiration: Optional[int] = None, collapse_id: Optional[str] = None) -> None:
         with httpx.Client(http2=True, verify=self.__credentials.ssl_context) as client:
-            status, reason = self.send_notification_sync(token_hex, notification, client, topic, priority, expiration,
-                                                         collapse_id)
+            response = self.send_notification_sync(
+                token_hex, notification, client, topic, priority, expiration, collapse_id
+            )
 
-        if status != 200:
-            raise exception_class_for_reason(reason)
+            result = self.get_notification_result(response)
+
+        if result != 'Success':
+            if isinstance(result, tuple):
+                reason, info = result
+                raise exception_class_for_reason(reason)(info)
+            else:
+                raise exception_class_for_reason(result)
 
     def send_notification_sync(self, token_hex: str, notification: Payload, client: httpx.Client,
                                topic: Optional[str] = None,
                                priority: NotificationPriority = NotificationPriority.Immediate,
                                expiration: Optional[int] = None, collapse_id: Optional[str] = None,
-                               push_type: Optional[NotificationType] = None) -> int:
+                               push_type: Optional[NotificationType] = None) -> httpx.Response:
         json_str = json.dumps(notification.dict(), cls=self.__json_encoder, ensure_ascii=False, separators=(',', ':'))
         json_payload = json_str.encode('utf-8')
 
@@ -127,17 +134,21 @@ class APNsClient(object):
 
         url = f'https://{self.__server}:{self.__port}/3/device/{token_hex}'
         response = client.post(url, headers=headers, data=json_payload)
-        return response.status_code, response.text
+        return response
 
-    def get_notification_result(self, status: int, reason: str) -> Union[str, Tuple[str, str]]:
+    def get_notification_result(self, response: httpx.Response) -> Union[str, Tuple[str, str]]:
         """
         Get result for specified stream
         The function returns: 'Success' or 'failure reason'
         """
-        if status == 200:
+        if response.status_code == 200:
             return 'Success'
         else:
-            return reason
+            data = response.json()
+            if response.status_code == 410:
+                return data['reason'], data['timestamp']
+            else:
+                return data['reason']
 
     def send_notification_batch(self, notifications: Iterable[Notification], topic: Optional[str] = None,
                                 priority: NotificationPriority = NotificationPriority.Immediate,
@@ -156,9 +167,14 @@ class APNsClient(object):
         with httpx.Client(http2=True, verify=self.__credentials.ssl_context) as client:
             for next_notification in notifications:
                 logger.info('Sending to token %s', next_notification.token)
-                status, reason = self.send_notification_sync(next_notification.token, next_notification.payload, client,
-                                                             topic, priority, expiration, collapse_id, push_type)
-                result = self.get_notification_result(status, reason)
+                response = self.send_notification_sync(
+                    next_notification.token, next_notification.payload, client, topic, priority, expiration, collapse_id, push_type
+                )
+                reason_or_result = self.get_notification_result(response)
+                if isinstance(reason_or_result, tuple):
+                    result, _ = reason_or_result
+                else:
+                    result = reason_or_result
                 logger.info('Got response for %s: %s', next_notification.token, result)
                 results[next_notification.token] = result
 
