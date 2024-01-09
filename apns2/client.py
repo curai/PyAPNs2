@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Dict, Iterable, Optional, Tuple, Union
 
 from .credentials import Credentials, CertificateCredentials, TokenCredentials
-from .errors import exception_class_for_reason
+from .errors import ConnectionFailed, exception_class_for_reason
 # We don't generally need to know about the Credentials subclasses except to
 # keep the old API, where APNsClient took a cert_file
 from .payload import Payload
@@ -133,7 +133,12 @@ class APNsClient(object):
             headers['apns-collapse-id'] = collapse_id
 
         url = f'https://{self.__server}:{self.__port}/3/device/{token_hex}'
-        response = client.post(url, headers=headers, data=json_payload)
+
+        try:
+            response = client.post(url, headers=headers, data=json_payload)
+        except httpx.NetworkError as e:
+            raise ConnectionFailed(e)
+
         return response
 
     def get_notification_result(self, response: httpx.Response) -> Union[str, Tuple[str, str]]:
